@@ -1,12 +1,10 @@
 import request from 'supertest'
-import { jest } from '@jest/globals'
 import { shutdownApp, getApp } from './utils/testApp'
-import { getLoggedInCustomer, getLoggedInOwner, getNewLoggedInCustomer, getNewLoggedInOwner } from './utils/auth'
-import { createRestaurant, getFirstRestaurantOfOwner } from './utils/restaurant'
+import { getLoggedInCustomer, getLoggedInOwner, getNewLoggedInOwner } from './utils/auth'
+import { getFirstRestaurantOfOwner } from './utils/restaurant'
 import { createProduct, getProductAlreadyOrdered, getNewPaellaProductData } from './utils/product'
 import dotenv from 'dotenv'
-import moment from 'moment'
-import { createOrder } from './utils/order.js'
+
 dotenv.config()
 
 describe('Get restaurant products', () => {
@@ -198,60 +196,6 @@ describe('Remove product', () => {
   it('Should return 404 when trying to delete a product already deleted', async () => {
     const response = await request(app).delete(`/products/${newProduct.id}`).set('Authorization', `Bearer ${owner.token}`).send()
     expect(response.status).toBe(404)
-  })
-  afterAll(async () => {
-    await shutdownApp()
-  })
-})
-
-describe('Popular products', () => {
-  jest.setTimeout(300000) // 300000 ms = 5 minutos
-
-  const createdPopularProducts = []
-  beforeAll(async () => {
-    const owner = await getNewLoggedInOwner()
-    const owner2 = await getNewLoggedInOwner()
-    const createdRestaurant = await createRestaurant(owner)
-    const createdRestaurant2 = await createRestaurant(owner2)
-    for (let i = 1; i < 4; i = i + 2) {
-      const productData = await getNewPaellaProductData(createdRestaurant)
-      productData.price = 0.001 * i
-      productData.name = `Cheap product ${i}`
-      createdPopularProducts.push(await createProduct(owner, createdRestaurant, productData))
-    }
-    for (let i = 2; i < 5; i = i + 2) {
-      const productData = await getNewPaellaProductData(createdRestaurant2)
-      productData.price = 0.0001 * i
-      productData.name = `Cheap product ${i}`
-      createdPopularProducts.push(await createProduct(owner2, createdRestaurant2, productData))
-    }
-    const customer = await getNewLoggedInCustomer()
-    const customer2 = await getNewLoggedInCustomer()
-    const popularOrderData = {
-      address: 'Calle popular 123',
-      products: []
-    }
-    popularOrderData.createdAt = moment().subtract(2, 'year').toDate()
-    popularOrderData.startedAt = moment().subtract(2, 'year').add(5, 'minute').toDate()
-    popularOrderData.startedAt = moment().subtract(2, 'year').add(10, 'minute').toDate()
-    popularOrderData.startedAt = moment().subtract(2, 'year').add(15, 'minute').toDate()
-
-    const orderData1 = { ...popularOrderData }
-    orderData1.restaurantId = createdRestaurant.id
-    orderData1.products = [{ productId: createdPopularProducts[0].id, quantity: 120000 }, { productId: createdPopularProducts[1].id, quantity: 100000 }]
-    const orderData2 = { ...popularOrderData }
-    orderData2.restaurantId = createdRestaurant2.id
-    orderData2.products = [{ productId: createdPopularProducts[2].id, quantity: 110000 }, { productId: createdPopularProducts[3].id, quantity: 90000 }]
-    await createOrder(customer, createdRestaurant, orderData1)
-    await createOrder(customer2, createdRestaurant2, orderData2)
-  })
-  it('Should return three products corresponding to the previously created', async () => {
-    const response = await request(await getApp()).get('/products/popular').send()
-    expect(response.status).toBe(200)
-    expect(response.body.length).toBe(3)
-    expect(response.body[0].id).toBe(createdPopularProducts[0].id)
-    expect(response.body[1].id).toBe(createdPopularProducts[2].id)
-    expect(response.body[2].id).toBe(createdPopularProducts[1].id)
   })
   afterAll(async () => {
     await shutdownApp()

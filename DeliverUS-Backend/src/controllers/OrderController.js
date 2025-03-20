@@ -1,3 +1,4 @@
+// eslint-disable-next-line no-unused-vars
 import { Order, Product, Restaurant, User, sequelizeSession } from '../models/models.js'
 import moment from 'moment'
 import { Op } from 'sequelize'
@@ -87,7 +88,26 @@ const indexRestaurant = async function (req, res) {
 // Orders have to include products that belongs to each order and restaurant details
 // sort them by createdAt date, desc.
 const indexCustomer = async function (req, res) {
-  res.status(500).send('This function is to be implemented')
+  const whereClauses = generateFilterWhereClauses(req)
+  whereClauses.push({
+    userId: req.user.id
+  })
+  try {
+    const orders = await Order.findAll({
+      where: whereClauses,
+      include: [{
+        model: Product,
+        as: 'products'
+      }, {
+        model: Restaurant,
+        as: 'restaurant'
+      }],
+      order: [['createdAt', 'DESC']]
+    })
+    res.json(orders)
+  } catch (err) {
+    res.status(500).send(err)
+  }
 }
 
 // TODO: Implement the create function that receives a new order and stores it in the database.
@@ -98,8 +118,56 @@ const indexCustomer = async function (req, res) {
 // 4. If an exception is raised, catch it and rollback the transaction
 
 const create = async (req, res) => {
-  // Use sequelizeSession to start a transaction
-  res.status(500).send('This function is to be implemented')
+  const t = await sequelizeSession.transaction()
+  try {
+    const newOrder = Order.build(req.body)
+    newOrder.createdAt = Date.now()
+    newOrder.startedAt = null
+    newOrder.sentAt = null
+    newOrder.deliveredAt = null
+    newOrder.userId = req.user.id // cliente autenticado
+
+    let precioTotalDelPedido = 0.0
+    for (const lineaProducto of req.body.products) {
+      const esteProducto = await Product.findByPk(lineaProducto.productId, {
+        atributes: ['price'],
+        transaction: t
+      })
+      precioTotalDelPedido += lineaProducto.quantity * esteProducto.price
+    }
+
+    if (precioTotalDelPedido > 10) {
+      newOrder.shippingCosts = 0.0
+    } else {
+      const esteRestaurante = await Restaurant.findByPk(req.body.restaurantId, {
+        transaction: t
+      })
+      newOrder.shippingCosts = esteRestaurante.shippingCosts
+    }
+    newOrder.price = precioTotalDelPedido + newOrder.shippingCosts
+
+    const order = await newOrder.save({ transaction: t })
+    for (const lineaProducto of req.body.products) {
+      const miProducto = await Product.findByPk(lineaProducto.productId, { transaction: t })
+      await order.addProduct(miProducto, { through: { quantity: lineaProducto.quantity, unityPrice: miProducto.price }, transaction: t })
+    }
+
+    const toReturn = await Order.findOne(
+      {
+        where: { id: order.id },
+        include: {
+          model: Product,
+          as: 'products'
+        },
+        transaction: t
+      })
+
+    await t.commit()
+    res.json(toReturn)
+  } catch (err) {
+    await t.rollback()
+    res.status(500).send(err)
+  }
 }
 
 // TODO: Implement the update function that receives a modified order and persists it in the database.
@@ -109,74 +177,150 @@ const create = async (req, res) => {
 // 3. In order to save the updated order and updated products, start a transaction, update the order, remove the old related OrderProducts and store the new product lines, and commit the transaction
 // 4. If an exception is raised, catch it and rollback the transaction
 const update = async function (req, res) {
-  // Use sequelizeSession to start a transaction
-  res.status(500).send('This function is to be implemented')
+  const t = await sequelizeSession.transaction()
+  try {
+    const pedidoOriginal = await Order.findByPk(req.params.orderId)
+
+    const updatedData = {
+      address: req.body.address
+    }
+
+    // Calculo precio del pedido => cantidad producto * precio producto
+    let precioTotalDelPedido = 0.0
+    for (const lineaProducto of req.body.products) {
+      const esteProducto = await Product.findByPk(lineaProducto.productId, {
+        atributes: ['price'],
+        transaction: t
+      })
+      precioTotalDelPedido += lineaProducto.quantity * esteProducto.price
+    }
+
+    // Calculo gastos de envio
+    if (precioTotalDelPedido > 10) {
+      updatedData.shippingCosts = 0.0
+    } else {
+      const esteRestaurante = await Restaurant.findByPk(pedidoOriginal.restaurantId, {
+        transaction: t
+      })
+      updatedData.shippingCosts = esteRestaurante.shippingCosts
+    }
+
+    // Precio = precio productos + gastos de envio
+    updatedData.price = precioTotalDelPedido + updatedData.shippingCosts
+
+    // Actualizamos
+    await Order.update(updatedData, { where: { id: req.params.orderId }, transaction: t })
+    const updatedOrder = await Order.findByPk(req.params.orderId, { transaction: t })
+
+    // Para eliminar los productos que hubiese antes
+    await updatedOrder.setProducts([], { transaction: t })
+
+    for (const product of req.body.products) {
+      const miProducto = await Product.findByPk(product.productId, { transaction: t })
+      await updatedOrder.addProduct(miProducto, { through: { quantity: product.quantity, unityPrice: miProducto.price }, transaction: t })
+    }
+
+    const toReturn = await Order.findOne(
+      {
+        where: { id: updatedOrder.id },
+        include: {
+          model: Product,
+          as: 'products'
+        },
+        transaction: t
+      })
+
+    await t.commit()
+    res.json(toReturn)
+  } catch (err) {
+    await t.rollback()
+    res.status(500).send(err)
+  }
 }
 
 // TODO: Implement the destroy function that receives an orderId as path param and removes the associated order from the database.
 // Take into account that:
 // 1. The migration include the "ON DELETE CASCADE" directive so OrderProducts related to this order will be automatically removed.
 const destroy = async function (req, res) {
-  res.status(500).send('This function is to be implemented')
+  try {
+    const result = await Order.destroy({ where: { id: req.params.orderId } })
+    let message = ''
+    if (result === 1) {
+      message = 'Sucessfuly deleted order id.' + req.params.orderId
+    } else {
+      message = 'Could not delete order.'
+    }
+    res.json(message)
+  } catch (err) {
+    res.status(500).send(err)
+  }
 }
 
 const confirm = async function (req, res) {
   try {
     const order = await Order.findByPk(req.params.orderId)
+    if (!order) {
+      return res.status(404).send('Order not found')
+    }
+    if (order.startedAt) {
+      return res.status(409).send('The order is not in a pending state')
+    }
     order.startedAt = new Date()
     const updatedOrder = await order.save()
     res.json(updatedOrder)
   } catch (err) {
-    res.status(500).send(err)
+    res.status(500).send(err.message)
   }
 }
 
 const send = async function (req, res) {
   try {
     const order = await Order.findByPk(req.params.orderId)
+    if (!order) {
+      return res.status(404).send('Order not found')
+    }
+    if (!order.startedAt || order.sentAt) {
+      return res.status(409).send('The order cannot be sent')
+    }
     order.sentAt = new Date()
     const updatedOrder = await order.save()
     res.json(updatedOrder)
   } catch (err) {
-    res.status(500).send(err)
+    res.status(500).send(err.message)
   }
 }
 
 const deliver = async function (req, res) {
   try {
     const order = await Order.findByPk(req.params.orderId)
+    if (!order) {
+      return res.status(404).send({ error: 'Order not found' })
+    }
+    if (!order.sentAt) {
+      return res.status(409).send({ error: 'The order has not been sent yet and cannot be delivered.' })
+    }
+    if (order.deliveredAt) {
+      return res.status(409).send({ error: 'The order has already been delivered.' })
+    }
     order.deliveredAt = new Date()
-    const updatedOrder = await order.save()
-    const restaurant = await Restaurant.findByPk(order.restaurantId)
-    const averageServiceTime = await restaurant.getAverageServiceTime()
-    await Restaurant.update({ averageServiceMinutes: averageServiceTime }, { where: { id: order.restaurantId } })
-    res.json(updatedOrder)
+    await order.save()
+    res.status(200).json(order)
   } catch (err) {
-    res.status(500).send(err)
+    res.status(500).send({ error: err.message })
   }
 }
 
 const show = async function (req, res) {
   try {
     const order = await Order.findByPk(req.params.orderId, {
-      include: [{
-        model: Restaurant,
-        as: 'restaurant',
-        attributes: ['name', 'description', 'address', 'postalCode', 'url', 'shippingCosts', 'averageServiceMinutes', 'email', 'phone', 'logo', 'heroImage', 'status', 'restaurantCategoryId']
-      },
-      {
-        model: User,
-        as: 'user',
-        attributes: ['firstName', 'email', 'avatar', 'userType']
-      },
-      {
-        model: Product,
-        as: 'products'
-      }]
+      include: [{ model: Product, as: 'products' }]
     })
-    res.json(order)
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' })
+    }
+    res.status(200).json(order)
   } catch (err) {
-    res.status(500).send(err)
+    res.status(500).send(err.message)
   }
 }
 
